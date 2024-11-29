@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from lightgbm import LGBMClassifier
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.naive_bayes import GaussianNB, MultinomialNB
 from sklearn.tree import DecisionTreeClassifier
@@ -12,6 +11,10 @@ from sklearn.metrics import accuracy_score, confusion_matrix, classification_rep
 from sklearn.model_selection import train_test_split, cross_val_predict, cross_val_score, KFold
 from sklearn.svm import LinearSVC
 from sklearn.decomposition import PCA
+from sklearn.metrics import log_loss
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
 import warnings
 
 def y_label_bar_graph(df):
@@ -49,7 +52,6 @@ def sns_plot(numeric_list, data, type):
             axes[i].set_title(f"{feature} vs Smoking")
         
 
-    # Delete any remaining unused axes if number of plots is less than grid size
     for j in range(i+1, len(axes)):
         fig.delaxes(axes[j])
 
@@ -66,41 +68,85 @@ def remove_outliers_zscore(df, column, threshold=3):
 
 
 
-def model_classifier(X_train,X_test,y_train,y_test,model):
-    mod = model
-    mod.fit(X_train, y_train)
-    y_pred = mod.predict(X_test)
-    
-    accuracy = accuracy_score(y_test, y_pred)
-    conf_matrix = confusion_matrix(y_test, y_pred)
-    report = classification_report(y_test, y_pred)
-    
-    
-    print("Accuracy:", accuracy)
-    print("Confusion Matrix:\n", conf_matrix)
-    print("Classification Report:\n", report)
+def model_classifier(X_train, X_test, y_train, y_test, model):
+    # Split validation from the test set
+    X_val, X_test_final, y_val, y_test_final = train_test_split(
+        X_test, y_test, test_size=0.5, random_state=42
+    )
+
+    # Train the model
+    model.fit(X_train, y_train)
+
+    # Compute log loss
+    y_train_proba = model.predict_proba(X_train)
+    y_val_proba = model.predict_proba(X_val)
+    y_test_final_proba = model.predict_proba(X_test_final)
+
+    train_loss = log_loss(y_train, y_train_proba)
+    val_loss = log_loss(y_val, y_val_proba)
+    test_loss = log_loss(y_test_final, y_test_final_proba)
+
+    # Report losses
+    print("Train Loss:", train_loss)
+    print("Validation Loss:", val_loss)
+    print("Test Loss:", test_loss)
+
+    # Classification reports
+    y_train_pred = model.predict(X_train)
+    y_val_pred = model.predict(X_val)
+    y_test_pred = model.predict(X_test_final)
+
+    print("\n=== Train Set ===")
+    print("Accuracy:", accuracy_score(y_train, y_train_pred))
+    print("Classification Report:\n", classification_report(y_train, y_train_pred))
+
+    print("\n=== Validation Set ===")
+    print("Accuracy:", accuracy_score(y_val, y_val_pred))
+    print("Classification Report:\n", classification_report(y_val, y_val_pred))
+
+    print("\n=== Test Set ===")
+    print("Accuracy:", accuracy_score(y_test_final, y_test_pred))
+    print("Classification Report:\n", classification_report(y_test_final, y_test_pred))
 
 
-    
 def model_classifier_kfold(X, y, model, n_splits=3):
     kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
 
-    y_pred = cross_val_predict(model, X, y, cv=kf)
-    
-    # Calculate accuracy and metrics
-    accuracy = accuracy_score(y, y_pred)
-    conf_matrix = confusion_matrix(y, y_pred)
-    report = classification_report(y, y_pred)
-    
-    # Print results
-    print("Accuracy (K-Fold):", accuracy)
-    print("Confusion Matrix (K-Fold):\n", conf_matrix)
-    print("Classification Report (K-Fold):\n", report)
-    
-    cv_scores = cross_val_score(model, X, y, cv=kf, scoring='accuracy')
-    print("Cross-validation scores:", cv_scores)
-    print("Mean cross-validation accuracy:", cv_scores.mean())
-    
+    train_losses = []
+    val_losses = []
+    fold_accuracies = []
+
+    for fold, (train_idx, val_idx) in enumerate(kf.split(X), 1):
+        # Split data for the fold
+        X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+        y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+
+        # Train the model
+        model.fit(X_train, y_train)
+
+        # Compute log loss
+        y_train_proba = model.predict_proba(X_train)
+        y_val_proba = model.predict_proba(X_val)
+
+        train_loss = log_loss(y_train, y_train_proba)
+        val_loss = log_loss(y_val, y_val_proba)
+
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+
+        # Validation accuracy
+        y_val_pred = model.predict(X_val)
+        val_accuracy = accuracy_score(y_val, y_val_pred)
+        fold_accuracies.append(val_accuracy)
+
+        print(f"Fold {fold}: Train Loss={train_loss:.4f}, Val Loss={val_loss:.4f}, Val Accuracy={val_accuracy:.4f}")
+
+    # Report mean metrics
+    print("\n=== Summary ===")
+    print(f"Mean Train Loss: {sum(train_losses) / n_splits:.4f}")
+    print(f"Mean Validation Loss: {sum(val_losses) / n_splits:.4f}")
+    print(f"Mean Validation Accuracy: {sum(fold_accuracies) / n_splits:.4f}")
+
 
 def plot_explained_variance(X_train):
     scaler = StandardScaler()
@@ -117,24 +163,49 @@ def plot_explained_variance(X_train):
     plt.ylabel('Cumulative Explained Variance')
     plt.title('Explained Variance vs Number of Components')
     plt.show()
-    
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
 
-def model_classifier_pca(X_train, X_test, y_train, y_test, model, n_components=17):    
+
+def model_classifier_pca(X_train, X_test, y_train, y_test, model, n_components=17):
+    # Apply PCA
     pca = PCA(n_components=n_components)
     X_train_pca = pca.fit_transform(X_train)
     X_test_pca = pca.transform(X_test)
-    
-    mod = model
-    mod.fit(X_train_pca, y_train)
-    y_pred = mod.predict(X_test_pca)
-    
-    accuracy = accuracy_score(y_test, y_pred)
-    conf_matrix = confusion_matrix(y_test, y_pred)
-    report = classification_report(y_test, y_pred)
-    
-    print("Accuracy:", accuracy)
-    print("Confusion Matrix:\n", conf_matrix)
-    print("Classification Report:\n", report)
+
+    # Split validation from the test set
+    X_val_pca, X_test_final_pca, y_val, y_test_final = train_test_split(
+        X_test_pca, y_test, test_size=0.5, random_state=42
+    )
+
+    # Train the model
+    model.fit(X_train_pca, y_train)
+
+    # Compute log loss
+    y_train_proba = model.predict_proba(X_train_pca)
+    y_val_proba = model.predict_proba(X_val_pca)
+    y_test_final_proba = model.predict_proba(X_test_final_pca)
+
+    train_loss = log_loss(y_train, y_train_proba)
+    val_loss = log_loss(y_val, y_val_proba)
+    test_loss = log_loss(y_test_final, y_test_final_proba)
+
+    # Report losses
+    print("Train Loss:", train_loss)
+    print("Validation Loss:", val_loss)
+    print("Test Loss:", test_loss)
+
+    # Classification reports
+    y_train_pred = model.predict(X_train_pca)
+    y_val_pred = model.predict(X_val_pca)
+    y_test_pred = model.predict(X_test_final_pca)
+
+    print("\n=== Train Set ===")
+    print("Accuracy:", accuracy_score(y_train, y_train_pred))
+    print("Classification Report:\n", classification_report(y_train, y_train_pred))
+
+    print("\n=== Validation Set ===")
+    print("Accuracy:", accuracy_score(y_val, y_val_pred))
+    print("Classification Report:\n", classification_report(y_val, y_val_pred))
+
+    print("\n=== Test Set ===")
+    print("Accuracy:", accuracy_score(y_test_final, y_test_pred))
+    print("Classification Report:\n", classification_report(y_test_final, y_test_pred))
